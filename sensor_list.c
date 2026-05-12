@@ -1,8 +1,8 @@
 #include <stdlib.h>
-#include "sensor_list.h"
 #include <stdio.h>
+#include <string.h>
 
-
+#include "sensor_list.h"
 
 void sensor_list_init(sensor_list_t *list)
 {
@@ -12,7 +12,8 @@ void sensor_list_init(sensor_list_t *list)
 }
 
 void sensor_list_insert(sensor_list_t *list,
-                        int id,
+                        const char *type,
+                        int sensor_id,
                         double value)
 {
     pthread_mutex_lock(&list->mutex);
@@ -20,8 +21,27 @@ void sensor_list_insert(sensor_list_t *list,
     sensor_node_t *node =
         malloc(sizeof(sensor_node_t));
 
-    node->sensor_id = id;
+    if(node == NULL)
+    {
+        pthread_mutex_unlock(&list->mutex);
+
+        return;
+    }
+
+    //--------------------------------
+    // COPY DATA
+    //--------------------------------
+
+    strcpy(node->sensor_type,
+           type);
+
+    node->sensor_id = sensor_id;
+
     node->value = value;
+
+    //--------------------------------
+    // INSERT HEAD
+    //--------------------------------
 
     node->next = list->head;
 
@@ -40,7 +60,8 @@ void sensor_list_print(sensor_list_t *list)
 
     while(curr)
     {
-        printf("Sensor ID: %d | Value: %.2f\n",
+        printf("Type: %s | ID: %d | Value: %.2f\n",
+               curr->sensor_type,
                curr->sensor_id,
                curr->value);
 
@@ -53,6 +74,7 @@ void sensor_list_print(sensor_list_t *list)
 }
 
 int sensor_list_pop(sensor_list_t *list,
+                    char *type,
                     int *sensor_id,
                     double *value)
 {
@@ -68,11 +90,25 @@ int sensor_list_pop(sensor_list_t *list,
     sensor_node_t *temp =
         list->head;
 
-    *sensor_id = temp->sensor_id;
+    //--------------------------------
+    // COPY DATA OUT
+    //--------------------------------
 
-    *value = temp->value;
+    strcpy(type,
+           temp->sensor_type);
 
-    list->head = temp->next;
+    *sensor_id =
+        temp->sensor_id;
+
+    *value =
+        temp->value;
+
+    //--------------------------------
+    // REMOVE HEAD
+    //--------------------------------
+
+    list->head =
+        temp->next;
 
     free(temp);
 

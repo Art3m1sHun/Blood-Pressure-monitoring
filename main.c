@@ -63,10 +63,13 @@ static void *sensor_client(void *args)
 
         buffer[n] = '\0';
 
+        char sensor_type[16];
+
         double value;
 
-        if (sscanf(buffer, "%d %lf", &sensor_id, &value) == 2){
-        sensor_list_insert(list, sensor_id, value);
+        if(sscanf(buffer, "%s %d %lf", sensor_type, &sensor_id, &value) == 3){
+        sensor_list_insert(list, sensor_type, sensor_id,
+                   value);
 
         sensor_list_print(list);
 
@@ -202,15 +205,14 @@ static void *storage(void *args)
 
     while(1)
     {
+        char sensor_type[16];
+
         int sensor_id;
 
         double value;
 
         int ok =
-            sensor_list_pop(list,
-                            &sensor_id,
-                            &value);
-
+        sensor_list_pop(list, sensor_type, &sensor_id, &value);
         if(ok)
         {
             printf("Store DB: %d %.2f\n",
@@ -218,8 +220,9 @@ static void *storage(void *args)
                    value);
 
             db_insert(db,
-                      sensor_id,
-                      value);
+                    sensor_type,
+                    sensor_id,
+                    value);
 
             write_log("Data inserted to DB");
         }
@@ -348,9 +351,11 @@ int main(int argc, char *argv[])
             {
                 int n = read(fd, buffer, sizeof(buffer));
                 
+                
 
                 if(n > 0)
                 {
+                    buffer[n] = '\0';
                     time_t now = time(NULL);
 
                     struct tm *t = localtime(&now);

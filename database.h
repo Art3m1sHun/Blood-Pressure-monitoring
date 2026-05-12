@@ -6,6 +6,7 @@
 sqlite3* db_connect();
 
 void db_insert(sqlite3 *db,
+               const char *type,
                int sensor_id,
                double value);
 
