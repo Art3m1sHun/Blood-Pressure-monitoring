@@ -27,11 +27,30 @@ pthread_t thread_ecg, thread_ppg;
 
 sensor_list_t *global_list;
 sensor_list_t shared_list;
+sensor_list_t filtered_list;    // data sau khi filter
 
 struct timespec start_time;
 volatile int running = 1;
 int global_server_fd;
 volatile int logger_running = 1;
+
+double filter_ecg(double x)
+{
+    static double y = 0;
+
+    y = 0.95 * y + 0.05 * x;
+
+    return y;
+}
+
+double filter_ppg(double x)
+{
+    static double y = 0;
+
+    y = 0.90 * y + 0.10 * x;
+
+    return y;
+}
 
 void logger_sigterm(int sig)
 {
@@ -41,13 +60,16 @@ void logger_sigterm(int sig)
 void handle_sigint(int sig)
 {
     running = 0;
-
     shutdown(global_server_fd, SHUT_RDWR);
     close(global_server_fd);
 
-    pthread_mutex_lock(&global_list->mutex);
-    pthread_cond_broadcast(&global_list->cond);
-    pthread_mutex_unlock(&global_list->mutex);
+    pthread_mutex_lock(&shared_list.mutex);
+    pthread_cond_broadcast(&shared_list.cond);
+    pthread_mutex_unlock(&shared_list.mutex);
+
+    pthread_mutex_lock(&filtered_list.mutex);
+    pthread_cond_broadcast(&filtered_list.cond);
+    pthread_mutex_unlock(&filtered_list.mutex);
 }
 
 static void *sensor_client(void *args)
@@ -169,14 +191,33 @@ void* connection(void *args)
     return NULL;
 }
 
-static void *data (void *args)
+static void *data(void *args)
 {
-    //sensor_list_t *list =(sensor_list_t*) args;
+    sensor_list_t *raw    = ((sensor_list_t**)args)[0];
+    sensor_list_t *filtered = ((sensor_list_t**)args)[1];
 
-    //sensor_list_insert(list, 1, 25.5);
+    double ecg, ppg;
+    char timestamp[32];
 
-    //write_log("data inserted");
+    while(running)
+    {
+        pthread_mutex_lock(&raw->mutex);
+        while(raw->head == NULL && running)
+            pthread_cond_wait(&raw->cond, &raw->mutex);
+        pthread_mutex_unlock(&raw->mutex);
 
+        if(!running) break;
+
+        if(sensor_list_pop(raw, &ecg, &ppg, timestamp))
+        {
+            double ecg_f = filter_ecg(ecg);
+            double ppg_f = filter_ppg(ppg);
+
+            printf("Filtered → ECG: %.2f PPG: %.2f\n", ecg_f, ppg_f);
+
+            sensor_list_insert(filtered, ecg_f, ppg_f);
+        }
+    }
     return NULL;
 }
 
@@ -290,6 +331,7 @@ int main(int argc, char *argv[])
 
     global_list = &shared_list;
     sensor_list_init(&shared_list);
+    sensor_list_init(&filtered_list);
     clock_gettime(CLOCK_MONOTONIC, &start_time);
 
 
@@ -456,13 +498,14 @@ int main(int argc, char *argv[])
                 write_log_format("pthread_create(connect) error: %d", ret);
                 return -1;
             }
-            ret = pthread_create(&data_thread,NULL,data,&shared_list);
+            sensor_list_t *data_args[2] = { &shared_list, &filtered_list };
+            ret = pthread_create(&data_thread, NULL, data, data_args);
             if(ret != 0){
                 write_log_format("pthread_create(connect) error: %d", ret);
                 return -1;          
             }
             
-            ret = pthread_create(&storage_thread,NULL,storage,&shared_list);
+            ret = pthread_create(&storage_thread, NULL, storage, &filtered_list);
             if(ret != 0){
                 write_log_format("pthread_create(connect) error: %d", ret);
                 return -1;          
