@@ -27,7 +27,7 @@ pthread_t thread_ecg, thread_ppg;
 
 sensor_list_t *global_list;
 sensor_list_t shared_list;
-sensor_list_t filtered_list;    // data sau khi filter
+sensor_list_t filtered_list;  
 
 struct timespec start_time;
 
@@ -37,7 +37,7 @@ volatile int logger_running = 1;
 int global_server_fd;
 int acquisition_started = 0;
 
-double filter_ecg(double x)
+double filter_ecg(double x) // co the filter data o day
 {
     static double y = 0;
 
@@ -46,7 +46,7 @@ double filter_ecg(double x)
     return y;
 }
 
-double filter_ppg(double x)
+double filter_ppg(double x) // co the filter data o day
 {
     static double y = 0;
 
@@ -93,24 +93,19 @@ static void *sensor_client(void *args)
 
     while(running)
     {
-        int n = recv(client_fd,
-                     buffer,
-                     sizeof(buffer)-1,
-                     0);
+        int n = recv(client_fd, buffer, sizeof(buffer)-1, 0);
 
         if(n <= 0)
         {
             char disconnect_msg[64];
             if (sensor_id != -1) {
-                // Nếu đã từng nhận được dữ liệu, ta biết ID là gì
                 sprintf(disconnect_msg, "Sensor %d disconnected", sensor_id);
             } else {
-                // Nếu chưa kịp gửi dữ liệu đã ngắt kết nối
                 sprintf(disconnect_msg, "Unknown sensor disconnected (fd: %d)", client_fd);
             }
 
             printf("%s\n", disconnect_msg);
-            write_log(disconnect_msg); // Ghi log có chứa ID
+            write_log(disconnect_msg);
             break;
         }
 
@@ -420,7 +415,7 @@ int main(int argc, char *argv[])
     pid_t pid_log = fork();
     sleep(1);
 
-    if(pid_log >= 0){
+    if(pid_log >= 0){ // tien trinh con ghi log
         if(pid_log == 0)
             {
                 signal(SIGTERM, logger_sigterm);
