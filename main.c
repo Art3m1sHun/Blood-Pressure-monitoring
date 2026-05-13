@@ -22,16 +22,24 @@
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_t thread_ecg, thread_ppg;
 
+sensor_list_t *global_list;
+sensor_list_t shared_list;
+
 volatile int running = 1;
 int global_server_fd;
 
+
 void handle_sigint(int sig)
 {
+    write_log("SIGINT received\n");
+    fflush(stdout);
+
     running = 0;
 
     close(global_server_fd);
-}
 
+    pthread_cond_broadcast(&global_list->cond);
+}
 static void *sensor_client(void *args)
 {
     sensor_client_arg_t *client =
@@ -232,12 +240,15 @@ static void *storage(void *args)
 
             write_log("Data inserted to DB");
         }else{
-            pthread_mutex_lock(&list->mutex);
+                pthread_mutex_lock(&list->mutex);
 
-            pthread_cond_wait(&list->cond, &list->mutex);
+                while(running && list->head == NULL)
+                {
+                    pthread_cond_wait(&list->cond, &list->mutex);
+                }
 
-            pthread_mutex_unlock(&list->mutex);
-        }
+                pthread_mutex_unlock(&list->mutex);
+            }
     }
 
     sqlite3_close(db);
@@ -258,13 +269,16 @@ int main(int argc, char *argv[])
         }
     }
 
+   
 
     pthread_t connect_thread;
     pthread_t data_thread;
     pthread_t storage_thread;
-    
-    sensor_list_t shared_list;
+
+    global_list = &shared_list;
     sensor_list_init(&shared_list);
+
+
 
 
     
@@ -290,6 +304,7 @@ int main(int argc, char *argv[])
         socket(AF_INET,
                SOCK_STREAM,
                0);
+    global_server_fd = server_fd;
 
     if(server_fd < 0)
     {
@@ -340,7 +355,7 @@ int main(int argc, char *argv[])
 
     if(pid_log >= 0){
         if(pid_log == 0){ // tiến trình ghi log
-            signal(SIGINT, handle_sigint);
+            signal(SIGINT, SIG_IGN);
             FILE *logfile = fopen("gateway.log", "a");
             if(logfile == NULL)
             {
@@ -348,6 +363,7 @@ int main(int argc, char *argv[])
                 exit(1);
             }
             int fd = open(FIFO_NAME, O_RDONLY);
+            fcntl(fd, F_SETFL, O_NONBLOCK);
             char buffer[256];
             if(fd < 0)
             {
@@ -409,10 +425,14 @@ int main(int argc, char *argv[])
             pthread_join(connect_thread, NULL);
             pthread_join(data_thread, NULL);
             pthread_join(storage_thread, NULL);
+
+            printf("AFTER JOIN\n");
+            fflush(stdout);
+
             printf("Graceful shutdown...\n");
 
             write_log("Gateway shutting down");
-
+            sleep(5);
             kill(pid_log, SIGTERM);
 
             unlink(FIFO_NAME);
