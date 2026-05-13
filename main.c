@@ -427,7 +427,7 @@ int main(int argc, char *argv[])
                 signal(SIGINT, SIG_IGN);
                 
                 FILE *logfile =
-                    fopen("gateway.log", "a");
+                    fopen("gateway.log", "w");
 
                 if(logfile == NULL)
                 {
