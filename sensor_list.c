@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,9 +15,8 @@ void sensor_list_init(sensor_list_t *list)
 }
 
 void sensor_list_insert(sensor_list_t *list,
-                        const char *type,
-                        int sensor_id,
-                        double value)
+                        double ecg,
+                        double ppg)
 {
     pthread_mutex_lock(&list->mutex);
 
@@ -26,24 +26,33 @@ void sensor_list_insert(sensor_list_t *list,
     if(node == NULL)
     {
         pthread_mutex_unlock(&list->mutex);
-
         return;
     }
 
-    //--------------------------------
-    // COPY DATA
-    //--------------------------------
+    node->ecg = ecg;
+    node->ppg = ppg;
 
-    strcpy(node->sensor_type,
-           type);
+    struct timespec now;
 
-    node->sensor_id = sensor_id;
+    clock_gettime(CLOCK_MONOTONIC_RAW,
+                  &now);
 
-    node->value = value;
+    long sec =
+        now.tv_sec - start_time.tv_sec;
 
-    //--------------------------------
-    // INSERT HEAD
-    //--------------------------------
+    long nsec =
+        now.tv_nsec - start_time.tv_nsec;
+
+    if(nsec < 0)
+    {
+        sec--;
+        nsec += 1000000000L;
+    }
+
+    sprintf(node->timestamp,
+            "%ld.%09ld",
+            sec,
+            nsec);
 
     node->next = list->head;
 
@@ -64,10 +73,10 @@ void sensor_list_print(sensor_list_t *list)
 
     while(curr)
     {
-        printf("Type: %s | ID: %d | Value: %.2f\n",
-               curr->sensor_type,
-               curr->sensor_id,
-               curr->value);
+        printf("TIME: %s ECG: %.2f PPG: %.2f\n",
+            curr->timestamp,
+            curr->ecg,
+            curr->ppg);
 
         curr = curr->next;
     }
@@ -77,44 +86,27 @@ void sensor_list_print(sensor_list_t *list)
     pthread_mutex_unlock(&list->mutex);
 }
 
-int sensor_list_pop(sensor_list_t *list,
-                    char *type,
-                    int *sensor_id,
-                    double *value)
+int sensor_list_pop(sensor_list_t *list, double *ecg, double *ppg, char *timestamp)
 {
     pthread_mutex_lock(&list->mutex);
 
     if(list->head == NULL)
     {
         pthread_mutex_unlock(&list->mutex);
-
         return 0;
     }
 
-    sensor_node_t *temp =
-        list->head;
+    sensor_node_t *node = list->head;
 
-    //--------------------------------
-    // COPY DATA OUT
-    //--------------------------------
+    list->head = node->next;
 
-    strcpy(type,
-           temp->sensor_type);
+    *ecg = node->ecg;
+    *ppg = node->ppg;
 
-    *sensor_id =
-        temp->sensor_id;
+    strcpy(timestamp,
+           node->timestamp);
 
-    *value =
-        temp->value;
-
-    //--------------------------------
-    // REMOVE HEAD
-    //--------------------------------
-
-    list->head =
-        temp->next;
-
-    free(temp);
+    free(node);
 
     pthread_mutex_unlock(&list->mutex);
 

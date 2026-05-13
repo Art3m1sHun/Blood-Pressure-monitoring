@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <string.h>
 #include <fcntl.h>
@@ -11,6 +12,7 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <signal.h>
+#include <sys/wait.h>
 
 #include "log.h"
 #include "sensor_list.h"
@@ -19,27 +21,35 @@
 
 #include <errno.h>
 
+
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_t thread_ecg, thread_ppg;
 
 sensor_list_t *global_list;
 sensor_list_t shared_list;
 
+struct timespec start_time;
 volatile int running = 1;
 int global_server_fd;
+volatile int logger_running = 1;
 
+void logger_sigterm(int sig)
+{
+    logger_running = 0;
+}
 
 void handle_sigint(int sig)
 {
-    write_log("SIGINT received\n");
-    fflush(stdout);
-
     running = 0;
 
+    shutdown(global_server_fd, SHUT_RDWR);
     close(global_server_fd);
 
+    pthread_mutex_lock(&global_list->mutex);
     pthread_cond_broadcast(&global_list->cond);
+    pthread_mutex_unlock(&global_list->mutex);
 }
+
 static void *sensor_client(void *args)
 {
     sensor_client_arg_t *client =
@@ -81,19 +91,14 @@ static void *sensor_client(void *args)
 
         buffer[n] = '\0';
 
-        char sensor_type[16];
+        double ecg;
+        double ppg;
 
-        double value;
+        if(sscanf(buffer, "%lf %lf", &ecg, &ppg) == 2)
+        {
+            sensor_list_insert(list, ecg, ppg);
 
-        if(sscanf(buffer, "%s %d %lf", sensor_type, &sensor_id, &value) == 3){
-        sensor_list_insert(list, sensor_type, sensor_id,
-                   value);
-
-        sensor_list_print(list);
-
-        printf("Received: %s\n", buffer);
-
-        write_log(buffer);
+            printf("ECG: %.2f PPG: %.2f\n", ecg, ppg);
         }
     }
 
@@ -143,6 +148,12 @@ void* connection(void *args)
         pthread_t sensor_thread;
 
         sensor_client_arg_t *client_arg = malloc(sizeof(sensor_client_arg_t));
+        if(client_arg == NULL)
+        {
+            perror("malloc");
+            close(client_fd);
+            continue;
+        }
 
         client_arg->client_fd = client_fd;
 
@@ -175,6 +186,9 @@ static void *storage(void *args)
         (sensor_list_t*) args;
 
     int retry = 0;
+    double ecg;
+    double ppg;
+    char timestamp[32];
 
     sqlite3 *db = NULL;
 
@@ -224,34 +238,33 @@ static void *storage(void *args)
 
     while(running)
     {
-        char sensor_type[16];
+        pthread_mutex_lock(&list->mutex);
 
-        int sensor_id;
-
-        double value;
-
-        int ok =
-        sensor_list_pop(list, sensor_type, &sensor_id, &value);
-        if(ok)
+        while(list->head == NULL && running)
         {
-            printf("Store DB: %d %.2f\n", sensor_id, value);
+            pthread_cond_wait(&list->cond, &list->mutex);
+        }
 
-            db_insert(db, sensor_type, sensor_id, value);
+        if(!running) {
+            pthread_mutex_unlock(&list->mutex);  // ← THÊM DÒNG NÀY
+            break;
+        }
 
-            write_log("Data inserted to DB");
-        }else{
-                pthread_mutex_lock(&list->mutex);
+        pthread_mutex_unlock(&list->mutex);
 
-                while(running && list->head == NULL)
-                {
-                    pthread_cond_wait(&list->cond, &list->mutex);
-                }
-
-                pthread_mutex_unlock(&list->mutex);
-            }
+        if(sensor_list_pop(list, &ecg, &ppg, timestamp))
+        {
+            db_insert(db, timestamp, ecg, ppg);
+        }
     }
 
     sqlite3_close(db);
+
+    db_export_session();
+
+    remove("current_session.db");
+    write_log("Exporting session database");
+    write_log("Database reset complete");
 
     return NULL;
 }
@@ -277,6 +290,7 @@ int main(int argc, char *argv[])
 
     global_list = &shared_list;
     sensor_list_init(&shared_list);
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
 
 
 
@@ -304,6 +318,14 @@ int main(int argc, char *argv[])
         socket(AF_INET,
                SOCK_STREAM,
                0);
+
+    int opt = 1;
+
+    setsockopt(server_fd,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            &opt,
+            sizeof(opt));
     global_server_fd = server_fd;
 
     if(server_fd < 0)
@@ -354,73 +376,97 @@ int main(int argc, char *argv[])
     sleep(1);
 
     if(pid_log >= 0){
-        if(pid_log == 0){ // tiến trình ghi log
-            signal(SIGINT, SIG_IGN);
-            FILE *logfile = fopen("gateway.log", "a");
-            if(logfile == NULL)
+        if(pid_log == 0)
             {
-                perror("fopen");
-                exit(1);
-            }
-            int fd = open(FIFO_NAME, O_RDONLY);
-            fcntl(fd, F_SETFL, O_NONBLOCK);
-            char buffer[256];
-            if(fd < 0)
-            {
-                perror("open fifo");
-                exit(1);
-            }
-            int sequence = 1;
-            
-            while(running)
-            {
-                int n = read(fd, buffer, sizeof(buffer));
+                signal(SIGTERM, logger_sigterm);
+                signal(SIGINT, SIG_IGN);
                 
-                
+                FILE *logfile =
+                    fopen("gateway.log", "a");
 
-                if(n > 0)
+                if(logfile == NULL)
                 {
-                    buffer[n] = '\0';
-                    time_t now = time(NULL);
-
-                    struct tm *t = localtime(&now);
-
-                    char time_str[16];
-
-                    strftime(time_str, sizeof(time_str), "%H:%M:%S", t);
-
-                    fprintf(logfile, "%d %s %s\n", sequence, time_str, buffer);
-
-                    fflush(logfile);
-
-                    sequence++;
+                    perror("fopen");
+                    exit(1);
                 }
-            }
-            fclose(logfile);
-        }else{ // tiến trinh cha bao gom connect, data, storage
-        
+
+                int fd =
+                    open(FIFO_NAME, O_RDONLY);
+
+                if(fd < 0)
+                {
+                    perror("open fifo");
+                    exit(1);
+                }
+
+                char buffer[512];
+
+                int sequence = 1;
+
+                while(logger_running)
+                {
+                    int n =
+                        read(fd,
+                            buffer,
+                            sizeof(buffer)-1);
+
+                    if(n > 0)
+                    {
+                        buffer[n] = '\0';
+
+                        struct timespec ts;
+
+                        clock_gettime(CLOCK_REALTIME,
+                                    &ts);
+
+                        fprintf(logfile,
+                                "%d %ld.%09ld %s\n",
+                                sequence,
+                                ts.tv_sec,
+                                ts.tv_nsec,
+                                buffer);
+
+                        fflush(logfile);
+
+                        sequence++;
+                    }
+                    else if(n == 0)
+                    {
+                        sleep(1);
+                    }
+                }
+
+                fclose(logfile);
+
+                close(fd);
+
+                exit(0);
+            }else{ // tiến trinh cha bao gom connect, data, storage
+            signal(SIGINT, handle_sigint);
+            signal(SIGTERM, SIG_DFL);
+
             connection_arg_t conn_arg;
             conn_arg.server_fd = server_fd;
 
             conn_arg.server_fd = server_fd;
 
             conn_arg.shared_list = &shared_list;
-
-          if(ret = pthread_create(&connect_thread, NULL, connection, &conn_arg)){
-            write_log_n("pthread_create(connect) error: %d\n", ret);
-            return -1;
-          }
-          
-          if(ret = pthread_create(&data_thread,NULL,data,&shared_list)){
-            write_log_n("pthread_create(data) error: %d\n", ret);
-            return -1;          
-          }
-          
-          
-          if(ret = pthread_create(&storage_thread,NULL,storage,&shared_list)){
-            write_log_n("pthread_create(storage) error: %d\n", ret);
-            return -1;          
-          }
+            ret = pthread_create(&connect_thread, NULL, connection, &conn_arg);
+            if(ret != 0){
+                write_log_format("pthread_create(connect) error: %d", ret);
+                return -1;
+            }
+            ret = pthread_create(&data_thread,NULL,data,&shared_list);
+            if(ret != 0){
+                write_log_format("pthread_create(connect) error: %d", ret);
+                return -1;          
+            }
+            
+            ret = pthread_create(&storage_thread,NULL,storage,&shared_list);
+            if(ret != 0){
+                write_log_format("pthread_create(connect) error: %d", ret);
+                return -1;          
+            }
 
             pthread_join(connect_thread, NULL);
             pthread_join(data_thread, NULL);
@@ -434,6 +480,7 @@ int main(int argc, char *argv[])
             write_log("Gateway shutting down");
             sleep(5);
             kill(pid_log, SIGTERM);
+            waitpid(pid_log, NULL, 0);
 
             unlink(FIFO_NAME);
 
