@@ -385,7 +385,7 @@ This project is released under the MIT License.
 
 # Author
 
-Nguyen Minh Hung
-Computer Engineering Student
-Embedded Software & Linux Systems Enthusiast
-email: minhhungdenguyn052@gmail.com
+* Nguyen Minh Hung
+* Computer Engineering Student
+* Embedded Software & Linux Systems Enthusiast
+* email: minhhungdenguyn052@gmail.com
